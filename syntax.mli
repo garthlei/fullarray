@@ -20,6 +20,7 @@ type ty =
   | TySink of ty
   | TyFloat
   | TyNat
+  | TyArray of ty
 
 type term =
     TmVar of info * int * int
@@ -49,6 +50,9 @@ type term =
   | TmIsZero of info * term
   | TmInert of info * ty
   | TmError of info
+  | TmArray of info * ty * term * term
+  | TmArrayIdx of info * term * term
+  | TmArrayLoc of info * int
 
 type binding =
     NameBind 

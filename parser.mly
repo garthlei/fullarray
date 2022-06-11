@@ -55,6 +55,7 @@ open Syntax
 %token <Support.Error.info> INERT
 %token <Support.Error.info> TYPE
 %token <Support.Error.info> NAT
+%token <Support.Error.info> ARRAY
 
 /* Identifier and constant value tokens */
 %token <string Support.Error.withinfo> UCID  /* uppercase-initial */
@@ -163,6 +164,8 @@ Type :
       { fun ctx -> TySource($2 ctx) }
   | SSINK AType
       { fun ctx -> TySink($2 ctx) }
+  | ARRAY AType
+      { fun ctx -> TyArray($2 ctx)}
 
 /* Atomic types are those that never need extra parentheses */
 AType :
@@ -254,6 +257,13 @@ AppTerm :
       { fun ctx -> TmPred($1, $2 ctx) }
   | ISZERO PathTerm
       { fun ctx -> TmIsZero($1, $2 ctx) }
+  | ARRAY LSQUARE Type RSQUARE LPAREN PathTerm COMMA PathTerm RPAREN
+      { fun ctx -> TmArray($1, $3 ctx, $6 ctx, $8 ctx) }
+  | ATerm LSQUARE PathTerm RSQUARE
+      { fun ctx ->
+          let e1 = $1 ctx in
+          let e2 = $3 ctx in
+          TmArrayIdx(tmInfo e1, e1, e2) }
 
 AscribeTerm :
     ATerm AS Type

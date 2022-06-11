@@ -44,6 +44,7 @@ let reservedWords = [
   ("type", fun i -> Parser.TYPE i);
   ("Nat", fun i -> Parser.NAT i);
   ("error", fun i -> Parser.ERROR i);
+  ("Array", fun i -> Parser.ARRAY i);
   
   (* Symbols *)
   ("_", fun i -> Parser.USCORE i);

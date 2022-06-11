@@ -21,6 +21,7 @@ type ty =
   | TySink of ty
   | TyFloat
   | TyNat
+  | TyArray of ty
 
 type term =
     TmVar of info * int * int
@@ -50,6 +51,9 @@ type term =
   | TmIsZero of info * term
   | TmInert of info * ty
   | TmError of info
+  | TmArray of info * ty * term * term
+  | TmArrayIdx of info * term * term
+  | TmArrayLoc of info * int
 
 type binding =
     NameBind 
@@ -123,6 +127,7 @@ let tymap onvar c tyT =
   | TySink(tyT1) -> TySink(walk c tyT1)
   | TyVar(x,n) -> onvar c x n
   | TyNat -> TyNat
+  | TyArray(tyT1) -> TyArray(walk c tyT1)
   in walk c tyT
 
 let tmmap onvar ontype c t = 
@@ -134,6 +139,7 @@ let tmmap onvar ontype c t =
   | TmString _ as t -> t
   | TmUnit(fi) as t -> t
   | TmLoc(fi,l) as t -> t
+  | TmArrayLoc(fi,a) as t -> t
   | TmRef(fi,t1) -> TmRef(fi,walk c t1)
   | TmDeref(fi,t1) -> TmDeref(fi,walk c t1)
   | TmAssign(fi,t1,t2) -> TmAssign(fi,walk c t1,walk c t2)
@@ -159,6 +165,8 @@ let tmmap onvar ontype c t =
   | TmPred(fi,t1)   -> TmPred(fi, walk c t1)
   | TmIsZero(fi,t1) -> TmIsZero(fi, walk c t1)
   | TmInert(fi,tyT) -> TmInert(fi,ontype c tyT)
+  | TmArray(fi,tyT,t1,t2) -> TmArray(fi, ontype c tyT, walk c t1, walk c t2)
+  | TmArrayIdx(fi,t1,t2) -> TmArrayIdx(fi, walk c t1, walk c t2)
   in walk c t
 
 let typeShiftAbove d c tyT =
@@ -247,6 +255,7 @@ let tmInfo t = match t with
   | TmString(fi,_) -> fi
   | TmUnit(fi) -> fi
   | TmLoc(fi,_) -> fi
+  | TmArrayLoc(fi,_) -> fi
   | TmRef(fi,_) -> fi
   | TmDeref(fi,_) -> fi
   | TmAssign(fi,_,_) -> fi
@@ -267,6 +276,8 @@ let tmInfo t = match t with
   | TmIsZero(fi,_) -> fi
   | TmInert(fi,_) -> fi
   | TmError(fi) -> fi
+  | TmArray(fi,_,_,_) -> fi
+  | TmArrayIdx(fi,_,_) -> fi
 
 (* ---------------------------------------------------------------------- *)
 (* Printing *)
@@ -298,6 +309,7 @@ let rec printty_Type outer ctx tyT = match tyT with
     TyRef(tyT) -> pr "Ref "; printty_AType false ctx tyT
   | TySource(tyT) -> pr "Source "; printty_AType false ctx tyT
   | TySink(tyT) -> pr "Sink "; printty_AType false ctx tyT
+  | TyArray(tyT) -> pr "Array "; printty_AType false ctx tyT
   | tyT -> printty_ArrowType outer ctx tyT
 
 and printty_ArrowType outer ctx  tyT = match tyT with 
@@ -430,6 +442,23 @@ and printtm_AppTerm outer ctx t = match t with
        pr "pred "; printtm_ATerm false ctx t1
   | TmIsZero(_,t1) ->
        pr "iszero "; printtm_ATerm false ctx t1
+  | TmArray(_,tyT,t1,t2) ->
+       obox();
+       pr "Array [";
+       printty_Type false ctx tyT;
+       pr "](";
+       printtm_Term false ctx t1;
+       pr ", ";
+       printtm_Term false ctx t2;
+       pr ")";
+       cbox()
+  | TmArrayIdx(_,t1,t2) ->
+       obox();
+       printtm_ATerm false ctx t1;
+       pr "[";
+       printtm_Term false ctx t2;
+       pr "]";
+       cbox()
   | t -> printtm_PathTerm outer ctx t
 
 and printtm_AscribeTerm outer ctx t = match t with
@@ -459,6 +488,8 @@ and printtm_ATerm outer ctx t = match t with
   | TmUnit(_) -> pr "unit"
   | TmLoc(fi, l) ->
        pr "<loc #"; print_int l; pr">"
+  | TmArrayLoc(fi, l) ->
+       pr "<Array #"; print_int l; pr">"
   | TmTag(fi, l, t, tyT) ->
       obox();
       pr "<"; pr l; pr "="; printtm_Term false ctx t; pr ">";

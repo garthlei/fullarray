@@ -14,6 +14,7 @@ let rec isval ctx t = match t with
     TmString _  -> true
   | TmUnit(_)  -> true
   | TmLoc(_,_) -> true
+  | TmArrayLoc(_,_) -> true
   | TmTag(_,l,t1,_) -> isval ctx t1
   | TmTrue(_)  -> true
   | TmFalse(_) -> true
@@ -23,8 +24,10 @@ let rec isval ctx t = match t with
   | TmRecord(_,fields) -> List.for_all (fun (l,ti) -> isval ctx ti) fields
   | _ -> false
 
-type store = term list  
+type store = term list
+type arrstore = int list list
 let emptystore = []
+let emptyarrstore = []
 let extendstore store v = (List.length store, List.append store [v])
 let lookuploc store l = List.nth store l
 let updatestore store n v =
@@ -35,163 +38,208 @@ let updatestore store n v =
   in
     f (n,store)
 let shiftstore i store = List.map (fun t -> termShift i t) store 
+let arraylen arrstore a = List.length (List.nth arrstore a)
 
 exception NoRuleApplies
 
-let rec eval1 ctx store t = match t with
+let rec eval1 ctx store arrstore t = match t with
     TmApp(_,TmError(fi),t2) ->
-      TmError(fi), store
+      TmError(fi), store, arrstore
   | TmApp(_,v1,TmError(fi)) when isval ctx v1 ->
-      TmError(fi), store
+      TmError(fi), store, arrstore
   | TmApp(fi,TmAbs(_,x,tyT11,t12),v2) when isval ctx v2 ->
-      termSubstTop v2 t12, store
+      termSubstTop v2 t12, store, arrstore
   | TmApp(fi,v1,t2) when isval ctx v1 ->
-      let t2',store' = eval1 ctx store t2 in
-      TmApp(fi, v1, t2'), store'
+      let t2',store',arrstore' = eval1 ctx store arrstore t2 in
+      TmApp(fi, v1, t2'), store', arrstore'
   | TmApp(fi,t1,t2) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmApp(fi, t1', t2), store'
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmApp(fi, t1', t2), store', arrstore'
   | TmAscribe(_,TmError(fi),tyT) ->
-      TmError(fi), store
+      TmError(fi), store, arrstore
   | TmAscribe(fi,v1,tyT) when isval ctx v1 ->
-      v1, store
+      v1, store, arrstore
   | TmAscribe(fi,t1,tyT) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmAscribe(fi,t1',tyT), store'
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmAscribe(fi,t1',tyT), store', arrstore'
   | TmRef(_,TmError(fi)) ->
-      TmError(fi), store
+      TmError(fi), store, arrstore
   | TmRef(fi,t1) ->
       if not (isval ctx t1) then
-        let (t1',store') = eval1 ctx store t1
-        in (TmRef(fi,t1'), store')
+        let (t1',store',arrstore') = eval1 ctx store arrstore t1
+        in (TmRef(fi,t1'), store', arrstore')
       else
         let (l,store') = extendstore store t1 in
-        (TmLoc(dummyinfo,l), store')
+        (TmLoc(dummyinfo,l), store', arrstore)
   | TmDeref(_,TmError(fi)) ->
-      TmError(fi), store
+      TmError(fi), store, arrstore
   | TmDeref(fi,t1) ->
       if not (isval ctx t1) then
-        let (t1',store') = eval1 ctx store t1
-        in (TmDeref(fi,t1'), store')
+        let (t1',store',arrstore') = eval1 ctx store arrstore t1
+        in (TmDeref(fi,t1'), store', arrstore')
       else (match t1 with
-            TmLoc(_,l) -> (lookuploc store l, store)
+            TmLoc(_,l) -> (lookuploc store l, store, arrstore)
           | _ -> raise NoRuleApplies)
+  | TmArray(_,_,TmError(fi),t2) ->
+      TmError(fi), store, arrstore
+  | TmArray(_,_,v1,TmError(fi)) when isval ctx v1 ->
+      TmError(fi), store, arrstore
+  | TmArray(fi,tyT,v1,v2) when (isnumericval ctx v1) && (isval ctx v2) ->
+      let rec extendstorearr t cnt store ls = (match cnt with
+        TmSucc(_,t1) ->
+          let (l, store') = extendstore store t in
+          extendstorearr t t1 store' (List.append ls [l])
+      | TmZero(_) -> (ls, store)
+      | _ -> raise NoRuleApplies) in
+      let (ls, store') = extendstorearr v2 v1 store [] in
+      let (a, arrstore') = extendstore arrstore ls in
+      (TmArrayLoc(dummyinfo,a), store', arrstore')
+  | TmArray(fi,tyT,v1,t2) when isval ctx v1 ->
+      let (t2',store',arrstore') = eval1 ctx store arrstore t2 in
+      TmArray(fi,tyT,v1,t2'), store', arrstore'
+  | TmArray(fi,tyT,t1,t2) ->
+      let (t1',store',arrstore') = eval1 ctx store arrstore t1 in
+      TmArray(fi,tyT,t1',t2), store', arrstore'
+  | TmArrayIdx(_,TmError(fi),t2) ->
+      TmError(fi), store, arrstore
+  | TmArrayIdx(_,v1,TmError(fi)) when isval ctx v1 ->
+      TmError(fi), store, arrstore
+  | TmArrayIdx(fi,v1,v2) when (isval ctx v1) && (isval ctx v2) ->
+      let rec getlitval t = (match t with
+        TmSucc(_,t1) -> (getlitval t1) + 1
+      | TmZero(_) -> 0
+      | _ -> raise NoRuleApplies) in
+      let litvalue = getlitval v2 in
+      (match v1 with
+        TmArrayLoc(_,a) -> 
+        let arraylen = arraylen arrstore a in
+        if litvalue < arraylen then
+          TmLoc(dummyinfo, List.nth (lookuploc arrstore a) litvalue),
+          store, arrstore
+        else TmError(dummyinfo), store, arrstore
+      | _ -> raise NoRuleApplies)
+  | TmArrayIdx(fi,v1,t2) when isval ctx v1 ->
+      let (t2',store',arrstore') = eval1 ctx store arrstore t2 in
+      TmArrayIdx(fi,v1,t2'), store', arrstore'
+  | TmArrayIdx(fi,t1,t2) ->
+      let (t1',store',arrstore') = eval1 ctx store arrstore t1 in
+      TmArrayIdx(fi,t1',t2), store', arrstore'
   | TmAssign(fi,t1,t2) ->
       if not (isval ctx t1) then
         (match t1 with
-          TmError(fi1) -> TmError(fi1), store
-        | _ -> let (t1',store') = eval1 ctx store t1
-            in (TmAssign(fi,t1',t2), store'))
+          TmError(fi1) -> TmError(fi1), store, arrstore
+        | _ -> let (t1',store',arrstore') = eval1 ctx store arrstore t1
+            in (TmAssign(fi,t1',t2), store', arrstore'))
       else if not (isval ctx t2) then
         (match t2 with
-          TmError(fi1) -> TmError(fi1), store
-        | _ -> let (t2',store') = eval1 ctx store t2
-            in (TmAssign(fi,t1,t2'), store'))
+          TmError(fi1) -> TmError(fi1), store, arrstore
+        | _ -> let (t2',store',arrstore') = eval1 ctx store arrstore t2
+            in (TmAssign(fi,t1,t2'), store', arrstore'))
       else (match t1 with
-            TmLoc(_,l) -> (TmUnit(dummyinfo), updatestore store l t2)
+            TmLoc(_,l) -> (TmUnit(dummyinfo), updatestore store l t2, arrstore)
           | _ -> raise NoRuleApplies)
-  | TmTag(_,_,TmError(fi),tyT) -> TmError(fi), store
+  | TmTag(_,_,TmError(fi),tyT) -> TmError(fi), store, arrstore
   | TmTag(fi,l,t1,tyT) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmTag(fi, l, t1',tyT), store'
-  | TmCase(_,TmError(fi),branches) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmTag(fi, l, t1',tyT), store', arrstore'
+  | TmCase(_,TmError(fi),branches) -> TmError(fi), store, arrstore
   | TmCase(fi,TmTag(_,li,v11,_),branches) when isval ctx v11->
       (try 
          let (x,body) = List.assoc li branches in
-         termSubstTop v11 body, store
+         termSubstTop v11 body, store, arrstore
        with Not_found -> raise NoRuleApplies)
   | TmCase(fi,t1,branches) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmCase(fi, t1', branches), store'
-  | TmLet(_,_,TmError(fi),t2) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmCase(fi, t1', branches), store', arrstore'
+  | TmLet(_,_,TmError(fi),t2) -> TmError(fi), store, arrstore
   | TmLet(fi,x,v1,t2) when isval ctx v1 ->
       (match t2 with
-        TmError(fi1) -> TmError(fi1), store
-      | _ -> termSubstTop v1 t2, store)
+        TmError(fi1) -> TmError(fi1), store, arrstore
+      | _ -> termSubstTop v1 t2, store, arrstore)
   | TmLet(fi,x,t1,t2) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmLet(fi, x, t1', t2), store' 
-  | TmFix(_,TmError(fi)) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmLet(fi, x, t1', t2), store', arrstore'
+  | TmFix(_,TmError(fi)) -> TmError(fi), store, arrstore
   | TmFix(fi,v1) as t when isval ctx v1 ->
       (match v1 with
-         TmAbs(_,_,_,t12) -> termSubstTop t t12, store
+         TmAbs(_,_,_,t12) -> termSubstTop t t12, store, arrstore
        | _ -> raise NoRuleApplies)
   | TmFix(fi,t1) ->
-      let t1',store' = eval1 ctx store t1
-      in TmFix(fi,t1'), store'
-  | TmIf(_,TmError(fi),t2,t3) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1
+      in TmFix(fi,t1'), store', arrstore'
+  | TmIf(_,TmError(fi),t2,t3) -> TmError(fi), store, arrstore
   | TmIf(_,TmTrue(_),t2,t3) ->
-      t2, store
+      t2, store, arrstore
   | TmIf(_,TmFalse(_),t2,t3) ->
-      t3, store
+      t3, store, arrstore
   | TmIf(fi,t1,t2,t3) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmIf(fi, t1', t2, t3), store'
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmIf(fi, t1', t2, t3), store', arrstore'
   | TmTimesfloat(fi,TmFloat(_,f1),TmFloat(_,f2)) ->
-      TmFloat(fi, f1 *. f2), store
+      TmFloat(fi, f1 *. f2), store, arrstore
   | TmTimesfloat(fi,(TmFloat(_,f1) as t1),t2) ->
-      let t2',store' = eval1 ctx store t2 in
-      TmTimesfloat(fi,t1,t2') , store'
+      let t2',store',arrstore' = eval1 ctx store arrstore t2 in
+      TmTimesfloat(fi,t1,t2') , store', arrstore'
   | TmTimesfloat(fi,t1,t2) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmTimesfloat(fi,t1',t2) , store'
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmTimesfloat(fi,t1',t2) , store', arrstore'
   | TmVar(fi,n,_) ->
       (match getbinding fi ctx n with
-          TmAbbBind(t,_) -> t,store 
+          TmAbbBind(t,_) -> t,store,arrstore
         | _ -> raise NoRuleApplies)
   | TmRecord(fi,fields) ->
       let rec evalafield l = match l with 
         [] -> raise NoRuleApplies
       | (l,vi)::rest when isval ctx vi -> 
-          let rest',store' = evalafield rest in
-          (l,vi)::rest', store'
+          let rest',store',arrstore' = evalafield rest in
+          (l,vi)::rest', store', arrstore'
       | (l,ti)::rest -> 
-          let ti',store' = eval1 ctx store ti in
-          (l, ti')::rest, store'
-      in let fields',store' = evalafield fields in
-      TmRecord(fi, fields'), store'
+          let ti',store',arrstore' = eval1 ctx store arrstore ti in
+          (l, ti')::rest, store', arrstore'
+      in let fields',store',arrstore' = evalafield fields in
+      TmRecord(fi, fields'), store', arrstore'
   | TmProj(fi, TmRecord(_, fields), l) ->
-      (try List.assoc l fields, store
+      (try List.assoc l fields, store, arrstore
        with Not_found -> raise NoRuleApplies)
   | TmProj(fi, t1, l) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmProj(fi, t1', l), store'
-  | TmSucc(_,TmError(fi)) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmProj(fi, t1', l), store', arrstore'
+  | TmSucc(_,TmError(fi)) -> TmError(fi), store, arrstore
   | TmSucc(fi,t1) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmSucc(fi, t1'), store'
-  | TmPred(_,TmError(fi)) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmSucc(fi, t1'), store', arrstore'
+  | TmPred(_,TmError(fi)) -> TmError(fi), store, arrstore
   | TmPred(_,TmZero(_)) ->
-      TmZero(dummyinfo), store
+      TmZero(dummyinfo), store, arrstore
   | TmPred(_,TmSucc(_,nv1)) when (isnumericval ctx nv1) ->
-      nv1, store
+      nv1, store, arrstore
   | TmPred(fi,t1) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmPred(fi, t1'), store'
-  | TmIsZero(_,TmError(fi)) -> TmError(fi), store
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmPred(fi, t1'), store', arrstore
+  | TmIsZero(_,TmError(fi)) -> TmError(fi), store, arrstore
   | TmIsZero(_,TmZero(_)) ->
-      TmTrue(dummyinfo), store
+      TmTrue(dummyinfo), store, arrstore
   | TmIsZero(_,TmSucc(_,nv1)) when (isnumericval ctx nv1) ->
-      TmFalse(dummyinfo), store
+      TmFalse(dummyinfo), store, arrstore
   | TmIsZero(fi,t1) ->
-      let t1',store' = eval1 ctx store t1 in
-      TmIsZero(fi, t1'), store'
+      let t1',store',arrstore' = eval1 ctx store arrstore t1 in
+      TmIsZero(fi, t1'), store', arrstore'
   | _ -> 
       raise NoRuleApplies
   (* TODO Error with Proj and float *)
 
-let rec eval ctx store t =
-  try let t',store' = eval1 ctx store t
-      in eval ctx store' t'
-  with NoRuleApplies -> t,store
+let rec eval ctx store arrstore t =
+  try let t',store',arrstore' = eval1 ctx store arrstore t
+      in eval ctx store' arrstore' t'
+  with NoRuleApplies -> t,store,arrstore
 
 (* ------------------------   SUBTYPING  ------------------------ *)
 
-let evalbinding ctx store b = match b with
+let evalbinding ctx store arrstore b = match b with
     TmAbbBind(t,tyT) ->
-      let t',store' = eval ctx store t in 
-      TmAbbBind(t',tyT), store'
-  | bind -> bind,store
+      let t',store',arrstore' = eval ctx store arrstore t in 
+      TmAbbBind(t',tyT), store', arrstore'
+  | bind -> bind,store,arrstore
 
 let istyabb ctx i = 
   match getbinding dummyinfo ctx i with
@@ -231,6 +279,7 @@ let rec tyeqv ctx tyS tyT =
        (tyeqv ctx tyS1 tyT1) && (tyeqv ctx tyS2 tyT2)
   | (TyUnit,TyUnit) -> true
   | (TyRef(tyT1),TyRef(tyT2)) -> tyeqv ctx tyT1 tyT2
+  | (TyArray(tyT1),TyArray(tyT2)) -> tyeqv ctx tyT1 tyT2
   | (TySource(tyT1),TySource(tyT2)) -> tyeqv ctx tyT1 tyT2
   | (TySink(tyT1),TySink(tyT2)) -> tyeqv ctx tyT1 tyT2
   | (TyTop,TyTop) -> true
@@ -508,3 +557,17 @@ let rec typeof ctx t =
       if subtype ctx (typeof ctx t1) TyNat then TyBool
       else error fi "argument of iszero is not a number"
   | TmError(fi) -> TyBot
+  | TmArray(fi,tyT,t1,t2) ->
+      if (subtype ctx (typeof ctx t1) TyNat)
+          && (subtype ctx (typeof ctx t2) tyT) then
+        TyArray(tyT)
+      else error fi "mismatched type(s) in array initialization"      
+  | TmArrayIdx(fi,t1,t2) ->
+      if subtype ctx (typeof ctx t2) TyNat then
+        let tyT1 = simplifyty ctx (typeof ctx t1) in
+        (match tyT1 with
+          TyArray(tyT11) -> TyRef(tyT11)
+        | _ -> error fi "subscription used on non-array")
+      else error fi "subscription is not a number"
+  | TmArrayLoc(fi,a) ->
+      error fi "array locations are not supposed to occur in source programs!"

@@ -71,41 +71,41 @@ let prbindingty ctx b = match b with
   | TyVarBind -> ()
   | TyAbbBind(tyT) -> pr ":: *"
 
-let rec process_file f (ctx,store) =
+let rec process_file f (ctx,store,arrstore) =
   if List.mem f (!alreadyImported) then
-    (ctx,store)
+    (ctx,store,arrstore)
   else (
     alreadyImported := f :: !alreadyImported;
     let cmds,_ = parseFile f ctx in
-    let g (ctx,store) c =  
+    let g (ctx,store,arrstore) c =  
       open_hvbox 0;
-      let results = process_command (ctx,store) c in
+      let results = process_command (ctx,store,arrstore) c in
       print_flush();
       results
     in
-      List.fold_left g (ctx,store) cmds)
+      List.fold_left g (ctx,store,arrstore) cmds)
 
-and process_command (ctx,store) cmd = match cmd with
+and process_command (ctx,store,arrstore) cmd = match cmd with
     Import(f) -> 
-      process_file f (ctx,store)
+      process_file f (ctx,store,arrstore)
   | Eval(fi,t) -> 
       let tyT = typeof ctx t in
-      let t',store  = eval ctx store t in
+      let t',store,arrstore  = eval ctx store arrstore t in
       printtm_ATerm true ctx t'; 
       print_break 1 2;
       pr ": ";
       printty ctx tyT;
       force_newline();
-      (ctx,store)
+      (ctx,store,arrstore)
   | Bind(fi,x,bind) -> 
       let bind = checkbinding fi ctx bind in
-      let bind',store' = evalbinding ctx store bind in
+      let bind',store',arrstore' = evalbinding ctx store arrstore bind in
       pr x; pr " "; prbindingty ctx bind'; force_newline();
-      addbinding ctx x bind', (shiftstore 1 store')
+      addbinding ctx x bind', (shiftstore 1 store'), arrstore'
   
 let main () = 
   let inFile = parseArgs() in
-  let _ = process_file inFile (emptycontext, emptystore) in
+  let _ = process_file inFile (emptycontext, emptystore, emptyarrstore) in
   ()
 
 let () = set_max_boxes 1000
