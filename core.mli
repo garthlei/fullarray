@@ -14,6 +14,7 @@ val emptystore : store
 val emptyarrstore : arrstore
 val shiftstore : int -> store -> store 
 val eval : context -> store -> arrstore -> term -> term * store * arrstore
+val gceval : context -> store -> arrstore -> term -> term * store * arrstore
 val evalbinding : context -> store -> arrstore -> binding -> binding * store * arrstore
 val tyeqv : context -> ty -> ty -> bool
 val simplifyty : context -> ty -> ty

@@ -39,6 +39,7 @@ let updatestore store n v =
     f (n,store)
 let shiftstore i store = List.map (fun t -> termShift i t) store 
 let arraylen arrstore a = List.length (List.nth arrstore a)
+let dbg = true
 
 exception NoRuleApplies
 
@@ -571,3 +572,130 @@ let rec typeof ctx t =
       else error fi "subscription is not a number"
   | TmArrayLoc(fi,a) ->
       error fi "array locations are not supposed to occur in source programs!"
+
+(* ---------------------  GARBAGE COLLECTION --------------------- *)
+
+let gceval1 ctx store arrstore t =
+  let rec walk llist arrlist t = match t with
+    TmAbs(fi,x,tyT1,t2) -> walk llist arrlist t2
+  | TmApp(fi,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | TmAscribe(fi,t1,tyT1) -> walk llist arrlist t1
+  | TmLoc(fi,l) ->
+      if not (List.mem l llist) then
+        let llist' = l :: llist in
+        walk llist' arrlist (lookuploc store l)
+      else llist, arrlist
+  | TmArrayLoc(fi,a) ->
+      if not (List.mem a arrlist) then
+        let arrlist' = a :: arrlist in
+        List.fold_left (fun (l,al) loc ->
+          walk l al (lookuploc store loc)) (llist,arrlist')
+            (lookuploc arrstore a)
+      else llist, arrlist
+  | TmRef(fi,t1) -> walk llist arrlist t1
+  | TmDeref(fi,t1) -> walk llist arrlist t1
+  | TmAssign(fi,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | TmTag(fi,l,t1,tyT) -> walk llist arrlist t1
+  | TmCase(fi,t,cases) ->
+      let llist',arrlist' = walk llist arrlist t in
+      List.fold_left (fun (l,al) (li,(xi,ti)) -> walk l al ti)
+        (llist',arrlist') cases
+  | TmLet(fi,x,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | TmFix(fi,t1) -> walk llist arrlist t1
+  | TmTimesfloat(fi,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | TmIf(fi,t1,t2,t3) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      let llist',arrlist' = walk llist' arrlist' t2 in
+      walk llist' arrlist' t3
+  | TmProj(fi,t1,l) -> walk llist arrlist t1
+  | TmRecord(fi,fields) ->
+      List.fold_left (fun (l,al) (li,ti) -> walk l al ti) (llist,arrlist)
+        fields
+  | TmSucc(fi,t1)   -> walk llist arrlist t1
+  | TmPred(fi,t1)   -> walk llist arrlist t1
+  | TmIsZero(fi,t1) -> walk llist arrlist t1
+  | TmArray(fi,tyT,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | TmArrayIdx(fi,t1,t2) ->
+      let llist',arrlist' = walk llist arrlist t1 in
+      walk llist' arrlist' t2
+  | _ -> llist, arrlist in
+  let usedlocunordered, usedarrunordered = walk [] [] t in
+  let usedloc = List.sort compare usedlocunordered in
+  let usedarr = List.sort compare usedarrunordered in
+  let rec newloc loclist n l = (match loclist with
+    idx :: tail -> if l = idx then n else newloc loclist (n+1) l
+  | _ -> raise NoRuleApplies) in
+  let rec renumber t = match t with
+    (* Actually we do not allow those variables in our implementation. *)
+    TmVar(fi,x,n) as t -> t
+  | TmAbs(fi,x,tyT1,t2) -> TmAbs(fi,x,tyT1,renumber t2)
+  | TmApp(fi,t1,t2) -> TmApp(fi,renumber t1,renumber t2)
+  | TmAscribe(fi,t1,tyT1) -> TmAscribe(fi,renumber t1,tyT1)
+  | TmString _ as t -> t
+  | TmUnit(fi) as t -> t
+  | TmLoc(fi,l) -> TmLoc(fi, newloc usedloc 0 l)
+  | TmArrayLoc(fi,a) -> TmArrayLoc(fi, newloc usedarr 0 a)
+  | TmRef(fi,t1) -> TmRef(fi,renumber t1)
+  | TmDeref(fi,t1) -> TmDeref(fi,renumber t1)
+  | TmAssign(fi,t1,t2) -> TmAssign(fi,renumber t1,renumber t2)
+  | TmTag(fi,l,t1,tyT) -> TmTag(fi, l, renumber t1, tyT)
+  | TmCase(fi,t,cases) ->
+      TmCase(fi, renumber t,
+             List.map (fun (li,(xi,ti)) -> (li, (xi,renumber ti)))
+               cases)
+  | TmLet(fi,x,t1,t2) -> TmLet(fi,x,renumber t1,renumber t2)
+  | TmFix(fi,t1) -> TmFix(fi,renumber t1)
+  | TmFloat _ as t -> t
+  | TmTimesfloat(fi,t1,t2) -> TmTimesfloat(fi, renumber t1, renumber t2)
+  | TmError(_) as t -> t
+  | TmTrue(fi) as t -> t
+  | TmFalse(fi) as t -> t
+  | TmIf(fi,t1,t2,t3) -> TmIf(fi,renumber t1,renumber t2,renumber t3)
+  | TmProj(fi,t1,l) -> TmProj(fi,renumber t1,l)
+  | TmRecord(fi,fields) -> TmRecord(fi,List.map (fun (li,ti) ->
+                                               (li,renumber ti))
+                                    fields)
+  | TmZero(fi)      -> TmZero(fi)
+  | TmSucc(fi,t1)   -> TmSucc(fi, renumber t1)
+  | TmPred(fi,t1)   -> TmPred(fi, renumber t1)
+  | TmIsZero(fi,t1) -> TmIsZero(fi, renumber t1)
+  | TmInert(fi,tyT) -> TmInert(fi,tyT)
+  | TmArray(fi,tyT,t1,t2) -> TmArray(fi, tyT, renumber t1, renumber t2)
+  | TmArrayIdx(fi,t1,t2) -> TmArrayIdx(fi, renumber t1, renumber t2) in
+  let t' = renumber t in
+  let rec renumberstore store loclist n = match store with
+    t :: sttail -> (match loclist with
+        idx :: loctail -> if n = idx then
+          (renumber t) :: (renumberstore sttail loctail (n+1))
+        else renumberstore sttail loclist (n+1)
+      | _ -> [])
+  | _ -> [] in
+  let store' = renumberstore store usedloc 0 in
+  let rec renumlist l = match l with
+    t :: tail -> (newloc usedloc 0 t) :: (renumlist tail)
+  | _ -> [] in
+  let rec renumberarrstore arrstore arrloclist n = match arrstore with
+    arr :: arrtail -> (match arrloclist with
+      idx :: loctail -> if n = idx then
+        (renumlist arr) :: (renumberarrstore arrtail loctail (n+1))
+        else renumberarrstore arrtail arrloclist (n+1)
+      | _ -> [])
+  | _ -> [] in
+  let arrstore' = renumberarrstore arrstore usedarr 0 in
+  t', store', arrstore'
+
+let rec gceval ctx store arrstore t =
+  try let t',store',arrstore' = eval1 ctx store arrstore t in
+    let t'',store'',arrstore'' = gceval1 ctx store' arrstore' t' in
+    eval ctx store'' arrstore'' t''
+  with NoRuleApplies -> t,store,arrstore

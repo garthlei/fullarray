@@ -90,7 +90,7 @@ and process_command (ctx,store,arrstore) cmd = match cmd with
       process_file f (ctx,store,arrstore)
   | Eval(fi,t) -> 
       let tyT = typeof ctx t in
-      let t',store,arrstore  = eval ctx store arrstore t in
+      let t',store,arrstore  = gceval ctx store arrstore t in
       printtm_ATerm true ctx t'; 
       print_break 1 2;
       pr ": ";
